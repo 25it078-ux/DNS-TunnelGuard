@@ -130,7 +130,6 @@ console.log("Suspicious domains detected:", suspiciousResults.length);
     "Analytics",
     "ML Model",
     "Learn",
-    "Team",
   ];
 
   return (
@@ -773,53 +772,7 @@ console.log("Suspicious domains detected:", suspiciousResults.length);
         </main>
       )}
       
-      {/* TEAM PAGE */}
-      {activePage === "Team" && (
-        <main className="dashboard-page">
-          <div className="dashboard-header">
-            <div>
-              <div className="status-badge">MEET THE DEVELOPERS</div>
-              <h1>Our Project Team</h1>
-              <p>
-                Building a cybersecurity solution to identify potential
-                DNS tunneling activity.
-              </p>
-            </div>
-          </div>
-
-          <section className="feature-grid">
-            {[
-              "MIRDHHULA SREE D",
-              "SRI SHAKTHI AKSHAYA P",
-              "PAVITHRA R",
-              "SWETHA N",
-            ].map((name, index) => (
-              <div className="feature-card" key={name}>
-                <div className="feature-icon">♙</div>
-                <h3>{name}</h3>
-                
-                <span className="card-arrow">
-                  Team Member {String(index + 1).padStart(2, "0")}
-                </span>
-              </div>
-            ))}
-          </section>
-
-          <section className="dashboard-panel" style={{ marginTop: "24px" }}>
-            <h2>Project Information</h2>
-            <p>
-              <strong>Project:</strong> DNS TunnelGuard
-            </p>
-            <p>
-              <strong>Title:</strong> Machine Learning-Based Detection of DNS
-              Tunneling Attacks Using DNS Traffic Characteristics
-            </p>
-            <p>
-              <strong>Department:</strong> Information Technology
-            </p>
-          </section>
-        </main>
-      )}
+      
             {/* TRAFFIC ANALYZER */}
       {activePage === "Traffic Analyzer" && (
         <main className="analyzer-page">
