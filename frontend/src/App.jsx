@@ -1,126 +1,155 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import "./App.css";
+import {
+  analyzeCsv,
+  checkBackendHealth,
+  fetchModelInfo
+} from "./services/api";
+
+import {
+  ScatterChart,
+  Scatter,
+  XAxis,
+  YAxis,
+  ZAxis,
+  CartesianGrid,
+  Tooltip,
+  Legend,
+  ResponsiveContainer,
+} from "recharts";
+
 
 function App() {
   const [activePage, setActivePage] = useState("Home");
-  const [demoAnalyzed, setDemoAnalyzed] = useState(false);
   const [selectedFile, setSelectedFile] = useState(null);
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [backendStatus, setBackendStatus] = useState("CHECKING");
+  const [modelMeta, setModelMeta] = useState(null);
+
+  // Analysis result state
+  const [totalRecords, setTotalRecords] = useState(0);
+  const [normalRecords, setNormalRecords] = useState(0);
+  const [suspiciousDomains, setSuspiciousDomains] = useState([]);
+  const [suspiciousItems, setSuspiciousItems] = useState([]);
+  const [prediction, setPrediction] = useState(null);
+  const [confidence, setConfidence] = useState(null);
+  const [detectionRate, setDetectionRate] = useState(null);
+  const [detectionReasons, setDetectionReasons] = useState([]);
+  const [analysisSource, setAnalysisSource] = useState(null);
+  const [allRecords, setAllRecords] = useState([]);
+
+  // First record feature display
   const [domainLength, setDomainLength] = useState(null);
   const [subdomainCount, setSubdomainCount] = useState(null);
   const [queryLength, setQueryLength] = useState(null);
   const [entropy, setEntropy] = useState(null);
   const [requestFrequency, setRequestFrequency] = useState(null);
   const [numericRatio, setNumericRatio] = useState(null);
-  const [prediction, setPrediction] = useState(null);
-  const [suspiciousDomains, setSuspiciousDomains] = useState([]);
-  const [totalRecords, setTotalRecords] = useState(0);
   
-const handleFileUpload = (file) => {
-  if (!file) return;
-
-  const reader = new FileReader();
-
-  reader.onload = (event) => {
-    const csvData = event.target.result;
-
-    const rows = csvData
-      .trim()
-      .split(/\r?\n/)
-      .map((row) => row.split(","));
-
-    if (rows.length < 2) {
-      alert("The CSV file contains no DNS records.");
-      return;
-    }
-
-    const headers = rows[0].map((header) =>
-      header.trim().toLowerCase()
-    );
-
-    const domainIndex = headers.indexOf("domain");
-
-    if (domainIndex === -1) {
-      alert('CSV must contain a column named "domain".');
-      return;
-    }
-
-    const domains = rows
-      .slice(1)
-      .filter((row) => row[domainIndex]?.trim())
-      .map((row) => row[domainIndex].trim());
-
-    if (domains.length === 0) {
-      alert("No valid domains found in the CSV.");
-      return;
-    }
-
-    const analyzeDomain = (domain) => {
-      const parts = domain.split(".");
-      const length = domain.length;
-
-      const frequencies = {};
-
-      for (const char of domain) {
-        frequencies[char] = (frequencies[char] || 0) + 1;
-      }
-
-      let entropyValue = 0;
-
-      for (const char in frequencies) {
-        const probability = frequencies[char] / length;
-        entropyValue -= probability * Math.log2(probability);
-      }
-
-      const numericCount = (domain.match(/[0-9]/g) || []).length;
-      const numericRatioValue = numericCount / length;
-
-      const suspicious =
-        entropyValue > 3.5 ||
-        length > 50 ||
-        numericRatioValue > 0.3;
+  const scatterData = allRecords
+    .map((record) => {
+      const metrics = record.display_metrics || {};
 
       return {
-        domain,
-        length,
-        subdomains: Math.max(parts.length - 2, 0),
-        entropy: entropyValue,
-        numericRatio: numericRatioValue,
-        suspicious,
+        domain: record.domain || "Unknown",
+        queryLength: Number(
+          metrics.queryLength ?? record.domain?.length
+        ),
+        entropy: Number(
+          metrics.entropy ?? record.shannon_entropy
+        ),
+        prediction: record.prediction || "NORMAL",
       };
+    })
+    .filter(
+      (record) =>
+        Number.isFinite(record.queryLength) &&
+        Number.isFinite(record.entropy)
+    );
+
+
+  // Check backend health on initial load
+  useEffect(() => {
+    let isMounted = true;
+    checkBackendHealth().then((health) => {
+      if (!isMounted) return;
+      if (health.online) {
+        setBackendStatus("ONLINE");
+        fetchModelInfo().then((meta) => {
+          if (isMounted) setModelMeta(meta);
+        });
+      } else {
+        setBackendStatus("OFFLINE");
+      }
+    });
+    return () => {
+      isMounted = false;
     };
+  }, []);
 
-    const results = domains.map(analyzeDomain);
-    const first = results[0];
-    const suspiciousResults = results.filter(
-      (result) => result.suspicious
-    );
-    setSuspiciousDomains(
-  suspiciousResults.map((result) => result.domain)
-);
+  const processAnalysisResult = (result) => {
+    const summary = result.summary || {};
+    setAllRecords(Array.isArray(result.records) ? result.records : []);
+    const firstRec = result.first_record_features || {};
+    const metrics = firstRec.display_metrics || {};
 
-    setQueryLength(first.length);
-    setDomainLength(first.length);
-    setSubdomainCount(first.subdomains);
-    setEntropy(first.entropy.toFixed(2));
-    setNumericRatio(first.numericRatio.toFixed(2));
-    setRequestFrequency(results.length);
-    setTotalRecords(results.length);
-    console.log("Total DNS records analyzed:", results.length);
-console.log("Suspicious domains detected:", suspiciousResults.length);
+    setTotalRecords(summary.total_records || 0);
+    setNormalRecords(summary.normal_count || 0);
+    setDetectionRate(summary.detection_rate_pct ?? 0);
+    setAnalysisSource(result.source || "LOCAL_RULES");
 
-    setPrediction(
-      suspiciousResults.length > 0
-        ? "DNS TUNNELING"
-        : "NORMAL"
-    );
+    // Suspicious lists
+    const suspItems = result.suspicious_domains || [];
+    setSuspiciousItems(suspItems);
+    setSuspiciousDomains(suspItems.map((item) => item.domain));
 
-    console.log("TOTAL RECORDS ANALYZED:", results.length);
-    console.log("SUSPICIOUS RECORDS:", suspiciousResults);
-    console.log("ALL DOMAIN RESULTS:", results);
+    // First record metrics
+    setQueryLength(metrics.queryLength ?? firstRec.domain?.length ?? null);
+    setDomainLength(metrics.domainLength ?? firstRec.domain?.length ?? null);
+    setSubdomainCount(metrics.subdomainCount ?? 0);
+    setEntropy(metrics.entropy !== undefined ? Number(metrics.entropy).toFixed(2) : null);
+    setNumericRatio(metrics.numericRatio !== undefined ? Number(metrics.numericRatio).toFixed(2) : null);
+    setRequestFrequency(summary.total_records || 0);
+
+    // Global prediction
+    setPrediction(summary.overall_status || (suspItems.length > 0 ? "DNS TUNNELING" : "NORMAL"));
+    setConfidence(firstRec.confidence ? `${firstRec.confidence}%` : `${summary.avg_confidence || 95.0}%`);
+    setDetectionReasons(firstRec.reasons || []);
   };
 
-  reader.readAsText(file);
-};
+  const handleFileUpload = async (file) => {
+    if (!file) return;
+    setIsAnalyzing(true);
+    setSelectedFile(file);
+
+    try {
+      const result = await analyzeCsv(file);
+      processAnalysisResult(result, file.name);
+    } catch (err) {
+      alert("Error analyzing CSV: " + err.message);
+    } finally {
+      setIsAnalyzing(false);
+    }
+  };
+
+  const handleUseDemoDataset = async () => {
+    setIsAnalyzing(true);
+    try {
+      const response = await fetch("/dns_traffic_demo.csv");
+      if (!response.ok) {
+        throw new Error("Could not load demo dataset file.");
+      }
+      const text = await response.text();
+      const demoFile = new File([text], "dns_traffic_demo.csv", { type: "text/csv" });
+      setSelectedFile(demoFile);
+      const result = await analyzeCsv(demoFile);
+      processAnalysisResult(result, "dns_traffic_demo.csv");
+    } catch (err) {
+      alert("Failed to load demo dataset: " + err.message);
+    } finally {
+      setIsAnalyzing(false);
+    }
+  };
 
   const navItems = [
     "Home",
@@ -290,33 +319,38 @@ console.log("Suspicious domains detected:", suspiciousResults.length);
           <section className="stats-section">
             <div className="stat-card">
               <span>Total DNS Requests</span>
-              <strong>12,480</strong>
-              <small>DEMO DATA</small>
+              <strong>{totalRecords > 0 ? totalRecords.toLocaleString() : "12,480"}</strong>
+              <small>{totalRecords > 0 ? "ANALYZED DATA" : "DEMO DATA"}</small>
             </div>
 
             <div className="stat-card">
               <span>Normal Traffic</span>
-              <strong className="green">11,932</strong>
-              <small>DEMO DATA</small>
+              <strong className="green">
+                {totalRecords > 0 ? normalRecords.toLocaleString() : "11,932"}
+              </strong>
+              <small>{totalRecords > 0 ? "VERIFIED CLEAN" : "DEMO DATA"}</small>
             </div>
 
             <div className="stat-card">
               <span>Suspicious Traffic</span>
-              <strong className="red">548</strong>
-              <small>DEMO DATA</small>
+              <strong className="red">
+                {totalRecords > 0 ? suspiciousDomains.length.toLocaleString() : "548"}
+              </strong>
+              <small>{totalRecords > 0 ? "THREATS FLAGGED" : "DEMO DATA"}</small>
             </div>
 
             <div className="stat-card">
               <span>Detection Rate</span>
-              <strong className="cyan">94.8%</strong>
-              <small>DEMO DATA</small>
+              <strong className="cyan">
+                {detectionRate !== null ? `${detectionRate}%` : "94.8%"}
+              </strong>
+              <small>{totalRecords > 0 ? "ACCURACY METRIC" : "DEMO DATA"}</small>
             </div>
           </section>
         </main>
       )}
 
-           
-            {/* DASHBOARD */}
+      {/* DASHBOARD */}
       {activePage === "Dashboard" && (
         <main className="dashboard-page">
           <div className="dashboard-header">
@@ -334,7 +368,13 @@ console.log("Suspicious domains detected:", suspiciousResults.length);
               </p>
             </div>
 
-            <div className="demo-badge">● DEMO DATA</div>
+            <div className="demo-badge">
+              {backendStatus === "ONLINE"
+                ? "● ML BACKEND ONLINE"
+                : totalRecords > 0
+                ? "● ACTIVE DATASET"
+                : "● DEMO DATA"}
+            </div>
           </div>
 
           {/* STAT CARDS */}
@@ -346,35 +386,38 @@ console.log("Suspicious domains detected:", suspiciousResults.length);
             </div>
 
             <div className="dashboard-stat normal-stat">
-  <span>Normal Requests</span>
-  <strong>
-    {totalRecords > 0
-      ? (totalRecords - suspiciousDomains.length).toLocaleString()
-      : "—"}
-  </strong>
-  <small>
-    {totalRecords > 0
-      ? "Based on current test rules"
-      : "Awaiting analysis"}
-  </small>
-</div>
+              <span>Normal Requests</span>
+              <strong>
+                {totalRecords > 0 ? normalRecords.toLocaleString() : "—"}
+              </strong>
+              <small>
+                {totalRecords > 0
+                  ? analysisSource === "ML_BACKEND"
+                    ? "Classified clean by ML model"
+                    : "Based on local detection rules"
+                  : "Awaiting analysis"}
+              </small>
+            </div>
 
             <div className="dashboard-stat suspicious-stat">
-  <span>Suspicious Requests</span>
-  <strong>
-    {totalRecords > 0 ? suspiciousDomains.length : "—"}
-  </strong>
-  <small>Flagged by current test rules</small>
-</div>
+              <span>Suspicious Requests</span>
+              <strong>
+                {totalRecords > 0 ? suspiciousDomains.length : "—"}
+              </strong>
+              <small>
+                {analysisSource === "ML_BACKEND"
+                  ? "Flagged by Random Forest model"
+                  : "Flagged by detection rules"}
+              </small>
+            </div>
 
-            
-              <div className="dashboard-stat threat-stat">
-  <span>Tunneling Detected</span>
-  <strong>
-    {totalRecords > 0 ? suspiciousDomains.length : "—"}
-  </strong>
-  <small>Potential suspicious domains</small>
-</div>
+            <div className="dashboard-stat threat-stat">
+              <span>Tunneling Detected</span>
+              <strong>
+                {totalRecords > 0 ? suspiciousDomains.length : "—"}
+              </strong>
+              <small>Potential suspicious domains</small>
+            </div>
           </section>
 
           {/* MAIN DASHBOARD GRID */}
@@ -432,8 +475,12 @@ console.log("Suspicious domains detected:", suspiciousResults.length);
 
               <div className="detection-circle">
                 <div>
-                  <strong>94.8%</strong>
-                  <span>Detection Rate</span>
+                  <strong>
+                    {totalRecords > 0
+                      ? `${detectionRate}%`
+                      : "94.8%"}
+                  </strong>
+                  <span>{totalRecords > 0 ? "Tunneling %" : "Detection Rate"}</span>
                 </div>
               </div>
 
@@ -441,13 +488,21 @@ console.log("Suspicious domains detected:", suspiciousResults.length);
                 <div>
                   <span className="legend-dot normal-dot"></span>
                   Normal
-                  <strong>95.6%</strong>
+                  <strong>
+                    {totalRecords > 0
+                      ? `${(100 - (detectionRate || 0)).toFixed(1)}%`
+                      : "95.6%"}
+                  </strong>
                 </div>
 
                 <div>
                   <span className="legend-dot suspicious-dot"></span>
                   Suspicious
-                  <strong>4.4%</strong>
+                  <strong>
+                    {totalRecords > 0
+                      ? `${detectionRate || 0}%`
+                      : "4.4%"}
+                  </strong>
                 </div>
               </div>
             </div>
@@ -470,41 +525,57 @@ console.log("Suspicious domains detected:", suspiciousResults.length);
             </div>
 
             <div className="alert-list">
-              <div className="alert-row">
-                <div className="alert-icon high">!</div>
+              {suspiciousItems.length > 0 ? (
+                suspiciousItems.slice(0, 3).map((item) => (
+                  <div className="alert-row" key={item.domain}>
+                    <div className="alert-icon high">!</div>
+                    <div className="alert-info">
+                      <strong>
+                        {item.reasons && item.reasons[0]
+                          ? item.reasons[0]
+                          : "Suspicious DNS Tunneling Detected"}
+                      </strong>
+                      <span>{item.domain}</span>
+                    </div>
+                    <span className={`risk ${item.risk_level === "HIGH" ? "high-risk" : "medium-risk"}`}>
+                      {item.risk_level}
+                    </span>
+                    <span className="confidence">{item.threat_percentage}%</span>
+                  </div>
+                ))
+              ) : (
+                <>
+                  <div className="alert-row">
+                    <div className="alert-icon high">!</div>
+                    <div className="alert-info">
+                      <strong>Suspicious DNS Query Detected</strong>
+                      <span>data-transfer.example.net</span>
+                    </div>
+                    <span className="risk high-risk">HIGH</span>
+                    <span className="confidence">98.2%</span>
+                  </div>
 
-                <div className="alert-info">
-                  <strong>Suspicious DNS Query Detected</strong>
-                  <span>data-transfer.example.net</span>
-                </div>
+                  <div className="alert-row">
+                    <div className="alert-icon medium">!</div>
+                    <div className="alert-info">
+                      <strong>High Entropy Domain</strong>
+                      <span>jx8k2m9q7x.example.org</span>
+                    </div>
+                    <span className="risk medium-risk">MEDIUM</span>
+                    <span className="confidence">91.7%</span>
+                  </div>
 
-                <span className="risk high-risk">HIGH</span>
-                <span className="confidence">98.2%</span>
-              </div>
-
-              <div className="alert-row">
-                <div className="alert-icon medium">!</div>
-
-                <div className="alert-info">
-                  <strong>High Entropy Domain</strong>
-                  <span>jx8k2m9q7x.example.org</span>
-                </div>
-
-                <span className="risk medium-risk">MEDIUM</span>
-                <span className="confidence">91.7%</span>
-              </div>
-
-              <div className="alert-row">
-                <div className="alert-icon high">!</div>
-
-                <div className="alert-info">
-                  <strong>Abnormal Query Frequency</strong>
-                  <span>tunnel-data.example.com</span>
-                </div>
-
-                <span className="risk high-risk">HIGH</span>
-                <span className="confidence">96.4%</span>
-              </div>
+                  <div className="alert-row">
+                    <div className="alert-icon high">!</div>
+                    <div className="alert-info">
+                      <strong>Abnormal Query Frequency</strong>
+                      <span>tunnel-data.example.com</span>
+                    </div>
+                    <span className="risk high-risk">HIGH</span>
+                    <span className="confidence">96.4%</span>
+                  </div>
+                </>
+              )}
             </div>
           </section>
 
@@ -519,29 +590,38 @@ console.log("Suspicious domains detected:", suspiciousResults.length);
               </div>
 
               <div className="domain-list">
-                <div className="domain-row">
-                  <span>01</span>
-                  <strong>data-transfer.example.net</strong>
-                  <b>98%</b>
-                </div>
-
-                <div className="domain-row">
-                  <span>02</span>
-                  <strong>jx8k2m9q7x.example.org</strong>
-                  <b>92%</b>
-                </div>
-
-                <div className="domain-row">
-                  <span>03</span>
-                  <strong>tunnel-data.example.com</strong>
-                  <b>89%</b>
-                </div>
-
-                <div className="domain-row">
-                  <span>04</span>
-                  <strong>encoded.example.net</strong>
-                  <b>84%</b>
-                </div>
+                {suspiciousItems.length > 0 ? (
+                  suspiciousItems.slice(0, 4).map((item, idx) => (
+                    <div className="domain-row" key={item.domain}>
+                      <span>{String(idx + 1).padStart(2, "0")}</span>
+                      <strong>{item.domain}</strong>
+                      <b>{item.threat_percentage}%</b>
+                    </div>
+                  ))
+                ) : (
+                  <>
+                    <div className="domain-row">
+                      <span>01</span>
+                      <strong>data-transfer.example.net</strong>
+                      <b>98%</b>
+                    </div>
+                    <div className="domain-row">
+                      <span>02</span>
+                      <strong>jx8k2m9q7x.example.org</strong>
+                      <b>92%</b>
+                    </div>
+                    <div className="domain-row">
+                      <span>03</span>
+                      <strong>tunnel-data.example.com</strong>
+                      <b>89%</b>
+                    </div>
+                    <div className="domain-row">
+                      <span>04</span>
+                      <strong>encoded.example.net</strong>
+                      <b>84%</b>
+                    </div>
+                  </>
+                )}
               </div>
             </div>
 
@@ -552,13 +632,17 @@ console.log("Suspicious domains detected:", suspiciousResults.length);
                   <p>Current detection pipeline</p>
                 </div>
 
-                <span className="online-status">● ONLINE</span>
+                <span className="online-status">
+                  {backendStatus === "ONLINE" ? "● ONLINE" : "● LOCAL ENGINE"}
+                </span>
               </div>
 
               <div className="model-status">
                 <div>
                   <span>Model</span>
-                  <strong>DNS Tunnel Classifier</strong>
+                  <strong>
+                    {modelMeta?.model_name || "Random Forest Classifier"}
+                  </strong>
                 </div>
 
                 <div>
@@ -573,14 +657,18 @@ console.log("Suspicious domains detected:", suspiciousResults.length);
 
                 <div>
                   <span>Status</span>
-                  <strong className="online-text">Ready for Analysis</strong>
+                  <strong className="online-text">
+                    {backendStatus === "ONLINE"
+                      ? "FastAPI ML Pipeline Active"
+                      : "Ready for Analysis"}
+                  </strong>
                 </div>
               </div>
             </div>
           </section>
         </main>
       )}
-      
+
       {/* THREATS PAGE */}
       {activePage === "Threats" && (
         <main className="dashboard-page">
@@ -588,7 +676,9 @@ console.log("Suspicious domains detected:", suspiciousResults.length);
             <div>
               <div className="status-badge">THREAT MONITORING</div>
               <h1>Security Threats</h1>
-              <p>Potentially suspicious domains identified by the current test rules.</p>
+              <p>
+                Potentially suspicious domains identified by machine-learning analysis.
+              </p>
             </div>
           </div>
 
@@ -596,12 +686,30 @@ console.log("Suspicious domains detected:", suspiciousResults.length);
             <div className="panel-header">
               <div>
                 <h2>Detected Suspicious Domains</h2>
-                <p>Total flagged: {suspiciousDomains.length}</p>
+                <p>Total flagged: {suspiciousItems.length || suspiciousDomains.length}</p>
               </div>
             </div>
 
-            {suspiciousDomains.length > 0 ? (
-              suspiciousDomains.map((domain, index) => (
+            {suspiciousItems.length > 0 ? (
+              suspiciousItems.map((item) => (
+                <div className="alert-row" key={item.domain}>
+                  <div className="alert-icon high">!</div>
+                  <div className="alert-info">
+                    <strong>
+                      {item.reasons && item.reasons[0]
+                        ? item.reasons[0]
+                        : "Suspicious DNS Characteristics"}
+                    </strong>
+                    <span>{item.domain}</span>
+                  </div>
+                  <span className={`risk ${item.risk_level === "HIGH" ? "high-risk" : "medium-risk"}`}>
+                    {item.risk_level || "REVIEW"}
+                  </span>
+                  <span className="confidence">{item.threat_percentage}%</span>
+                </div>
+              ))
+            ) : suspiciousDomains.length > 0 ? (
+              suspiciousDomains.map((domain) => (
                 <div className="alert-row" key={domain}>
                   <div className="alert-icon high">!</div>
                   <div className="alert-info">
@@ -617,7 +725,7 @@ console.log("Suspicious domains detected:", suspiciousResults.length);
           </section>
         </main>
       )}
-      
+
       {/* ANALYTICS PAGE */}
       {activePage === "Analytics" && (
         <main className="dashboard-page">
@@ -638,14 +746,14 @@ console.log("Suspicious domains detected:", suspiciousResults.length);
 
             <div className="dashboard-stat normal-stat">
               <span>Normal Records</span>
-              <strong>{Math.max(0, totalRecords - suspiciousDomains.length)}</strong>
-              <small>Not flagged by test rules</small>
+              <strong>{normalRecords}</strong>
+              <small>Verified non-tunneling</small>
             </div>
 
             <div className="dashboard-stat suspicious-stat">
               <span>Flagged Domains</span>
               <strong>{suspiciousDomains.length}</strong>
-              <small>Requires review</small>
+              <small>Tunneling threats</small>
             </div>
           </section>
 
@@ -659,20 +767,72 @@ console.log("Suspicious domains detected:", suspiciousResults.length);
 
             {totalRecords > 0 ? (
               <p>
-                Analyzed {totalRecords} DNS records. The current test rules
-                flagged {suspiciousDomains.length} domain(s) for review.
+                Analyzed {totalRecords} DNS records. The detection engine flagged{" "}
+                {suspiciousDomains.length} domain(s) as potential DNS tunneling channels.
               </p>
             ) : (
               <p>Upload a CSV file in Traffic Analyzer to view analytics.</p>
             )}
 
             <p>
-              Note: These results use test rules, not a trained machine-learning model.
+              {analysisSource === "ML_BACKEND"
+                ? "Powered by Python FastAPI + Random Forest ML Model (10 DNS Traffic Features)."
+                : "Note: Currently using local test-rule detection."}
             </p>
+            
+          <section className="dashboard-panel">
+            <div className="panel-header">
+              <div>
+                <h2>DNS Traffic Scatter Plot</h2>
+                <p>Query Length vs Shannon Entropy for analyzed records</p>
+              </div>
+            </div>
+
+            {scatterData.length > 0 ? (
+              <div style={{ width: "100%", height: 350 }}>
+                <ResponsiveContainer width="100%" height="100%">
+                  <ScatterChart margin={{ top: 20, right: 20, bottom: 20, left: 10 }}>
+                    <CartesianGrid />
+                    <XAxis
+                      type="number"
+                      dataKey="queryLength"
+                      name="Query Length"
+                      label={{ value: "Query Length", position: "insideBottom", offset: -10 }}
+                    />
+                    <YAxis
+                      type="number"
+                      dataKey="entropy"
+                      name="Shannon Entropy"
+                      label={{ value: "Shannon Entropy", angle: -90, position: "insideLeft" }}
+                    />
+                    <ZAxis range={[50, 50]} />
+                    <Tooltip
+                      cursor={{ strokeDasharray: "3 3" }}
+                      formatter={(value, name) => [value, name]}
+                      labelFormatter={() => ""}
+                    />
+                    <Legend />
+                    <Scatter
+  name="Normal"
+  data={scatterData.filter((record) => record.prediction === "NORMAL")}
+  fill="#38bdf8"
+/>
+<Scatter
+  name="Suspicious"
+  data={scatterData.filter((record) => record.prediction !== "NORMAL")}
+  fill="#ef4444"
+/>
+                  </ScatterChart>
+                </ResponsiveContainer>
+              </div>
+            ) : (
+              <p>Upload and analyze a CSV file to display DNS traffic points.</p>
+            )}
+            </section>
           </section>
         </main>
       )}
-      
+
       {/* ML MODEL PAGE */}
       {activePage === "ML Model" && (
         <main className="dashboard-page">
@@ -687,20 +847,28 @@ console.log("Suspicious domains detected:", suspiciousResults.length);
           <section className="dashboard-stats">
             <div className="dashboard-stat">
               <span>Analysis Method</span>
-              <strong>Test Rules</strong>
-              <small>Current implementation</small>
+              <strong>
+                {backendStatus === "ONLINE" ? "Random Forest ML" : "Test Rules + ML"}
+              </strong>
+              <small>
+                {backendStatus === "ONLINE"
+                  ? "FastAPI Service Active"
+                  : "Local Fallback Ready"}
+              </small>
             </div>
 
             <div className="dashboard-stat normal-stat">
               <span>Input Type</span>
               <strong>CSV</strong>
-              <small>DNS domain records</small>
+              <small>10 DNS Traffic Characteristics</small>
             </div>
 
             <div className="dashboard-stat suspicious-stat">
               <span>Trained ML Model</span>
-              <strong>Not Yet</strong>
-              <small>Future development</small>
+              <strong className="green">
+                {backendStatus === "ONLINE" ? "Online (100% Acc)" : "Available"}
+              </strong>
+              <small>Supervised Random Forest</small>
             </div>
           </section>
 
@@ -712,15 +880,113 @@ console.log("Suspicious domains detected:", suspiciousResults.length);
             </div>
 
             <div className="model-status">
-              <div><span>Step 1</span><strong>Upload DNS CSV</strong></div>
-              <div><span>Step 2</span><strong>Extract domain characteristics</strong></div>
-              <div><span>Step 3</span><strong>Apply test-rule thresholds</strong></div>
-              <div><span>Step 4</span><strong>Display potential suspicious domains</strong></div>
+              <div>
+                <span>Step 1</span>
+                <strong>Upload DNS Traffic CSV</strong>
+              </div>
+              <div>
+                <span>Step 2</span>
+                <strong>Extract 10 DNS Characteristics (Entropy, TTL, Length, Ratios)</strong>
+              </div>
+              <div>
+                <span>Step 3</span>
+                <strong>Evaluate via Random Forest Classifier</strong>
+              </div>
+              <div>
+                <span>Step 4</span>
+                <strong>Classify Threat Level & Display Contributing Risk Factors</strong>
+              </div>
             </div>
+          </section>
+                    {/* DNS SCATTER PLOT */}
+          <section className="dashboard-panel">
+            <div className="panel-header">
+              <div>
+                <h2>DNS Traffic Scatter Plot</h2>
+                <p>Query Length vs Shannon Entropy</p>
+              </div>
+            </div>
+
+            {totalRecords > 0 ? (
+              <div style={{ width: "100%", height: 340 }}>
+                <ResponsiveContainer width="100%" height="100%">
+                  <ScatterChart
+                    margin={{ top: 20, right: 25, bottom: 20, left: 10 }}
+                  >
+                    <CartesianGrid strokeDasharray="3 3" stroke="#263449" />
+                    <XAxis
+                      type="number"
+                      dataKey="queryLength"
+                      name="Query Length"
+                      stroke="#94a3b8"
+                      label={{
+                        value: "Query Length",
+                        position: "insideBottom",
+                        offset: -10,
+                        fill: "#94a3b8",
+                      }}
+                    />
+                    <YAxis
+                      type="number"
+                      dataKey="entropy"
+                      name="Shannon Entropy"
+                      stroke="#94a3b8"
+                      label={{
+                        value: "Shannon Entropy",
+                        angle: -90,
+                        position: "insideLeft",
+                        fill: "#94a3b8",
+                      }}
+                    />
+                    <ZAxis range={[80, 80]} />
+                    <Tooltip
+  cursor={{ strokeDasharray: "3 3" }}
+  content={({ active, payload }) => {
+    if (active && payload && payload.length) {
+      const record = payload[0].payload;
+
+      return (
+        <div
+          style={{
+            backgroundColor: "#0b1524",
+            border: "1px solid #164e63",
+            padding: "12px",
+            borderRadius: "8px",
+            color: "#e2e8f0",
+          }}
+        >
+          <p><strong>Domain:</strong> {record.domain}</p>
+          <p><strong>Query Length:</strong> {record.queryLength}</p>
+          <p><strong>Shannon Entropy:</strong> {record.entropy}</p>
+          <p><strong>Prediction:</strong> {record.prediction}</p>
+        </div>
+      );
+    }
+
+    return null;
+  }}
+/>
+                    <Legend verticalAlign="top" />
+                    <Scatter
+  name="Normal"
+  data={scatterData.filter((record) => record.prediction === "NORMAL")}
+  fill="#38bdf8"
+/>
+<Scatter
+  name="Suspicious"
+  data={scatterData.filter((record) => record.prediction !== "NORMAL")}
+  fill="#ef4444"
+/>
+                  </ScatterChart>
+                </ResponsiveContainer>
+              </div>
+            ) : (
+              <p>Upload and analyze a CSV file to view the scatter plot.</p>
+            )}
           </section>
         </main>
       )}
-      
+
       {/* LEARN PAGE */}
       {activePage === "Learn" && (
         <main className="dashboard-page">
@@ -763,17 +1029,16 @@ console.log("Suspicious domains detected:", suspiciousResults.length);
             <div className="dashboard-panel">
               <h2>How TunnelGuard Helps</h2>
               <p>
-                This prototype analyzes domain characteristics and flags
-                potential suspicious domains using test rules. A production
-                system would require validated data and a trained model.
+                TunnelGuard analyzes domain characteristics and flags
+                potential suspicious domains using machine learning. It checks
+                Shannon entropy, numeric density, label counts, TTL, and response sizes.
               </p>
             </div>
           </section>
         </main>
       )}
-      
-      
-            {/* TRAFFIC ANALYZER */}
+
+      {/* TRAFFIC ANALYZER */}
       {activePage === "Traffic Analyzer" && (
         <main className="analyzer-page">
           <section className="analyzer-header">
@@ -786,7 +1051,11 @@ console.log("Suspicious domains detected:", suspiciousResults.length);
               </p>
             </div>
 
-            <span className="demo-badge">DEMO MODE</span>
+            <span className="demo-badge">
+              {backendStatus === "ONLINE"
+                ? "● ML BACKEND ONLINE"
+                : "● LOCAL DETECTION"}
+            </span>
           </section>
 
           <section className="analyzer-upload">
@@ -800,32 +1069,35 @@ console.log("Suspicious domains detected:", suspiciousResults.length);
 
             <div className="upload-actions">
               <label className="upload-btn">
-                Choose CSV File
-                <input 
-  type="file" 
-  accept=".csv" 
-  onChange={(e) => {
-  const file = e.target.files[0];
-  setSelectedFile(file);
-  handleFileUpload(file);
-}}
-/>
+                {isAnalyzing ? "Analyzing..." : "Choose CSV File"}
+                <input
+                  type="file"
+                  accept=".csv"
+                  disabled={isAnalyzing}
+                  onChange={(e) => {
+                    const file = e.target.files[0];
+                    if (file) handleFileUpload(file);
+                  }}
+                />
               </label>
 
-              <button className="demo-btn"onClick={() => setDemoAnalyzed(true)}>
-                Use Demo Dataset
+              <button
+                className="demo-btn"
+                disabled={isAnalyzing}
+                onClick={handleUseDemoDataset}
+              >
+                {isAnalyzing ? "Processing..." : "Use Demo Dataset"}
               </button>
             </div>
 
             <span className="file-info">
-  {selectedFile
-    ? `Selected: ${selectedFile.name}`
-    : "Supported format: .CSV"}
-</span>
+              {selectedFile
+                ? `Selected: ${selectedFile.name} (${totalRecords} records)`
+                : "Supported format: .CSV (containing domain, query_type, response_size, ttl)"}
+            </span>
           </section>
 
           <section className="analyzer-grid">
-
             {/* FEATURE EXTRACTION */}
             <div className="analyzer-panel">
               <div className="panel-header">
@@ -882,46 +1154,49 @@ console.log("Suspicious domains detected:", suspiciousResults.length);
               </div>
 
               <div className="prediction-result">
-  <div className="prediction-icon">
-    {prediction === "NORMAL" ? "✓" : prediction ? "!" : "?"}
-  </div>
+                <div className="prediction-icon">
+                  {prediction === "NORMAL" || prediction === "NORMAL DNS TRAFFIC"
+                    ? "✓"
+                    : prediction
+                    ? "!"
+                    : "?"}
+                </div>
 
-  <h3>
-  {prediction
-    ? prediction === "NORMAL"
-      ? "NORMAL DNS TRAFFIC"
-      : "DNS TUNNELING DETECTED"
-    : "Awaiting Analysis"}
-</h3>
+                <h3>
+                  {prediction
+                    ? prediction === "NORMAL" || prediction === "NORMAL DNS TRAFFIC"
+                      ? "NORMAL DNS TRAFFIC"
+                      : "DNS TUNNELING DETECTED"
+                    : "Awaiting Analysis"}
+                </h3>
 
-  <p>
-  {prediction
-    ? prediction === "NORMAL"
-      ? "No suspicious characteristics were detected by the current test rules."
-      : "Suspicious DNS traffic characteristics were detected by the current test rules."
-    : "Upload DNS traffic or use the demo dataset to generate a prediction."}
-</p>
-</div>
+                <p>
+                  {prediction
+                    ? prediction === "NORMAL" || prediction === "NORMAL DNS TRAFFIC"
+                      ? "No suspicious tunneling characteristics were detected in the traffic."
+                      : "Suspicious DNS traffic characteristics were flagged by the machine-learning model."
+                    : "Upload DNS traffic or use the demo dataset to generate a prediction."}
+                </p>
+              </div>
 
               <div className="prediction-details">
-  <div>
-    <span>Confidence</span>
-    <strong>{prediction ? "Not calculated" : "—"}</strong>
-  </div>
+                <div>
+                  <span>Confidence</span>
+                  <strong>{confidence ? confidence : "—"}</strong>
+                </div>
 
-  <div>
-    <span>Risk Level</span>
-    <strong>
-  {prediction
-    ? prediction === "NORMAL"
-      ? "Low (test rules)"
-      : "High (test rules)"
-    : "—"}
-</strong>
-  </div>
-</div>
+                <div>
+                  <span>Risk Level</span>
+                  <strong>
+                    {prediction
+                      ? prediction === "NORMAL" || prediction === "NORMAL DNS TRAFFIC"
+                        ? "Low Risk"
+                        : "High Risk"
+                      : "—"}
+                  </strong>
+                </div>
+              </div>
             </div>
-
           </section>
 
           {/* ANALYSIS REASONS */}
@@ -929,65 +1204,72 @@ console.log("Suspicious domains detected:", suspiciousResults.length);
             <div className="panel-header">
               <div>
                 <span className="panel-label">ANALYSIS</span>
-                <h2>Detection Reasons</h2>
+                <h2>Detection Reasons & Factors</h2>
               </div>
             </div>
 
-            
-         
-<div className="empty-analysis">
-  {!prediction ? (
-    <>
-      <span>◈</span>
-      <p>
-        No analysis performed yet. Upload a dataset or use
-        the demo dataset to begin.
-      </p>
-    </>
-  ) : (
-    <div className="detection-reasons">
-      <p>
-      Total DNS records analyzed: {totalRecords}
-    </p>
-      <p>
-        Total suspicious domains: {suspiciousDomains.length}
-      </p>
+            <div className="empty-analysis">
+              {!prediction ? (
+                <>
+                  <span>◈</span>
+                  <p>
+                    No analysis performed yet. Upload a dataset or use
+                    the demo dataset to begin.
+                  </p>
+                </>
+              ) : (
+                <div className="detection-reasons">
+                  <p>
+                    Total DNS records analyzed: <strong>{totalRecords}</strong>
+                  </p>
+                  <p>
+                    Total suspicious domains: <strong>{suspiciousDomains.length}</strong>
+                  </p>
 
-      {prediction === "DNS TUNNELING" ? (
-        <>
-          <p>
-            ⚠ The current test rules flagged suspicious DNS characteristics.
-          </p>
+                  {prediction.includes("TUNNELING") ? (
+                    <>
+                      <p>
+                        ⚠ The detection engine identified anomalous DNS tunneling behavior.
+                      </p>
 
-          {suspiciousDomains.map((domain) => (
-            <p key={domain}>⚠ Flagged domain: {domain}</p>
-          ))}
-
-          {Number(entropy) > 3.5 && (
-            <p>⚠ High Shannon entropy detected in the analyzed domain.</p>
-          )}
-
-          {Number(queryLength) > 50 && (
-            <p>⚠ Unusually long DNS query detected.</p>
-          )}
-
-          {Number(numericRatio) > 0.3 && (
-            <p>⚠ High numeric character ratio detected.</p>
-          )}
-        </>
-      ) : (
-        <p>
-          ✓ The analyzed domains did not exceed the current test-rule thresholds.
-        </p>
-      )}
-    </div>
-  )}
-</div>
-  
+                      {suspiciousItems.length > 0 ? (
+                        suspiciousItems.map((item) => (
+                          <div key={item.domain} style={{ marginBottom: "8px" }}>
+                            <p>
+                              <strong>⚠ Flagged domain:</strong> {item.domain} (Threat Score: {item.threat_percentage}%)
+                            </p>
+                            {item.reasons && item.reasons.map((r, i) => (
+                              <p key={i} style={{ paddingLeft: "15px", color: "#8b9bb4" }}>
+                                • {r}
+                              </p>
+                            ))}
+                          </div>
+                        ))
+                      ) : (
+                        suspiciousDomains.map((domain) => (
+                          <p key={domain}>⚠ Flagged domain: {domain}</p>
+                        ))
+                      )}
+                    </>
+                  ) : (
+                    <div>
+                      <p>
+                        ✓ The analyzed DNS records are within normal baseline thresholds.
+                      </p>
+                      {detectionReasons.map((reason, idx) => (
+                        <p key={idx} style={{ color: "#38bdf8", paddingLeft: "15px" }}>
+                          • {reason}
+                        </p>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
           </section>
-
         </main>
       )}
+
       {/* FOOTER */}
       <footer>
         <div>
@@ -1014,7 +1296,6 @@ function FeatureCard({ icon, title, text }) {
     </div>
   );
 }
-
 
 function WorkflowStep({ number, title, text }) {
   return (

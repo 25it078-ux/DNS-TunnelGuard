@@ -1,0 +1,11 @@
+domain,query_type,response_size,ttl
+google.com,A,120,300
+youtube.com,A,145,300
+facebook.com,A,130,300
+data-transfer.example.net,A,520,45
+jx8k2m9q7x.example.org,A,610,30
+tunnel-data.example.com,A,580,40
+encoded.example.net,A,490,35
+github.com,A,150,300
+amazon.com,A,140,300
+microsoft.com,A,135,300
